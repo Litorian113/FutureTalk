@@ -4,8 +4,6 @@
 
 > **Current Status**: Transforms spoken input into German in real-time. (Multi-language support coming soon!)
 
-![FutureTalk Banner](https://images.unsplash.com/photo-1589254065878-42c9da997008?q=80&w=2000&auto=format&fit=crop)
-
 ## ✨ Features
 
 - **Real-Time Voice Capture**: Seamlessly records audio using your device's microphone or connected AirPods.
