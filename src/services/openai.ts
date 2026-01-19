@@ -2,7 +2,8 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import { OPENAI_API_KEY } from '../constants';
 
-export const transcribeAudio = async (uri: string): Promise<string> => {
+// Returns text AND detected language
+export const transcribeAudio = async (uri: string): Promise<{ text: string; language: string }> => {
     const formData = new FormData();
 
     const fileUri = uri.startsWith('file://') ? uri : `file://${uri}`;
@@ -14,6 +15,7 @@ export const transcribeAudio = async (uri: string): Promise<string> => {
     } as any);
 
     formData.append('model', 'whisper-1');
+    formData.append('response_format', 'verbose_json'); // Need meta data
 
     const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
         method: 'POST',
@@ -30,7 +32,35 @@ export const transcribeAudio = async (uri: string): Promise<string> => {
     }
 
     const data = await res.json();
-    return data.text;
+    return {
+        text: data.text,
+        language: data.language
+    };
+};
+
+export const summarizeText = async (text: string): Promise<string> => {
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+            'Authorization': `Bearer ${OPENAI_API_KEY}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            model: 'gpt-4o-mini',
+            messages: [
+                {
+                    role: 'system',
+                    content: `You are an intelligent minute-taker. Summarize the following transcript into concise, bulleted key points in German. Keep it professional and brief.`
+                },
+                { role: 'user', content: text }
+            ],
+        }),
+    });
+
+    if (!res.ok) throw new Error('Summary failed');
+
+    const data = await res.json();
+    return data.choices[0]?.message?.content || "";
 };
 
 export const translateText = async (text: string, source: string, target: string): Promise<string> => {

@@ -77,7 +77,7 @@ export default function TranslateScreen() {
     const processAudio = async (uri: string, side: 'user' | 'partner') => {
         try {
             // 1. Transcribe
-            const text = await transcribeAudio(uri);
+            const { text, language } = await transcribeAudio(uri);
 
             if (!text || text.trim().length === 0) {
                 setProcessingStatus(null);
@@ -86,6 +86,7 @@ export default function TranslateScreen() {
 
             // 2. Translate
             const sourceLang = side === 'user' ? userLang : partnerLang;
+            // Note: We could use 'language' from whisper to be smarter here, but sticking to user selection for now.
             const targetLang = side === 'user' ? partnerLang : userLang;
 
             setProcessingStatus(`Translating to ${targetLang.name}...`);
