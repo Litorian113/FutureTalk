@@ -3,7 +3,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { OPENAI_API_KEY } from '../constants';
 
 // Returns text AND detected language
-export const transcribeAudio = async (uri: string): Promise<{ text: string; language: string }> => {
+export const transcribeAudio = async (uri: string, prompt?: string): Promise<{ text: string; language: string }> => {
     const formData = new FormData();
 
     const fileUri = uri.startsWith('file://') ? uri : `file://${uri}`;
@@ -16,6 +16,11 @@ export const transcribeAudio = async (uri: string): Promise<{ text: string; lang
 
     formData.append('model', 'whisper-1');
     formData.append('response_format', 'verbose_json'); // Need meta data
+
+    // Add prompt for context continuity (helps Whisper understand sentence flow)
+    if (prompt) {
+        formData.append('prompt', prompt);
+    }
 
     const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
         method: 'POST',

@@ -9,7 +9,7 @@ import { useRecorder } from '../hooks/useAudio';
 import { transcribeAudio, translateText, summarizeText, generateTTS } from '../services/openai';
 
 // Config
-const CHUNK_DURATION_MS = 10000; // 10 seconds
+const CHUNK_DURATION_MS = 15000; // 15 seconds (longer chunks = less interruptions, better context)
 const SUMMARY_INTERVAL_MS = 30000; // 30 seconds
 
 type TranscriptSegment = {
@@ -30,7 +30,8 @@ export default function ListenScreen() {
     // Data State
     const [segments, setSegments] = useState<TranscriptSegment[]>([]);
     const [summary, setSummary] = useState<string>('');
-    const [summaryBuffer, setSummaryBuffer] = useState<string>(''); // Accumulates text for summary
+    const [fullTranscript, setFullTranscript] = useState<string>(''); // Full cumulative transcript for summary
+    const [lastTranscriptContext, setLastTranscriptContext] = useState<string>(''); // Last few sentences for Whisper prompt
 
     // Audio & Refs
     const { startRecording, stopRecording } = useRecorder();
@@ -192,8 +193,9 @@ export default function ListenScreen() {
     const processChunk = async (uri: string) => {
         try {
             setStatus('Transcribing...');
-            // A. Transcribe + Detect Lang
-            const { text, language } = await transcribeAudio(uri);
+
+            // A. Transcribe + Detect Lang (with context prompt for continuity)
+            const { text, language } = await transcribeAudio(uri, lastTranscriptContext);
 
             if (!text || text.trim().length < 2) return; // Ignore silence
 
@@ -203,7 +205,11 @@ export default function ListenScreen() {
                 germanText = await translateText(text, language || "Auto", "German");
             }
 
-            // C. Update UI
+            // C. Update context for next chunk (keep last ~100 chars for prompt)
+            const contextSnippet = text.slice(-100); // Last 100 chars
+            setLastTranscriptContext(contextSnippet);
+
+            // D. Update UI
             const newSegment: TranscriptSegment = {
                 id: Date.now().toString(),
                 original: text,
@@ -212,10 +218,10 @@ export default function ListenScreen() {
             };
 
             setSegments(prev => [newSegment, ...prev]);
-            setSummaryBuffer(prev => prev + " " + germanText);
+            setFullTranscript(prev => prev + " " + germanText); // Accumulate for summary
             setStatus('Listening...');
 
-            // D. Generate TTS & Queue
+            // E. Generate TTS & Queue
             const ttsUri = await generateTTS(germanText, 'alloy'); // Alloy is good for general
             if (ttsUri) {
                 setTtsQueue(prev => [...prev, ttsUri]);
@@ -227,20 +233,14 @@ export default function ListenScreen() {
     };
 
     const performSummary = async () => {
-        if (!summaryBuffer || summaryBuffer.length < 50) return;
+        if (!fullTranscript || fullTranscript.length < 50) return;
 
         try {
-            // Don't clear buffer entirely, keep context? No, minute-taking usually clears processed buffer.
-            const textToSummarize = summaryBuffer;
-            // We act on a snapshot
+            // Use the FULL transcript for cumulative summary
+            const newSummary = await summarizeText(fullTranscript);
+            setSummary(newSummary); // REPLACE instead of append
 
-            const newSummaryPoints = await summarizeText(textToSummarize);
-            setSummary(prev => newSummaryPoints + "\n\n" + (prev || ""));
-
-            // Clear buffer only the part we processed? 
-            // Safer to just clear what we sent.
-            // Ideally we use a ref to handle race conditions, but for now simple set is ok.
-            setSummaryBuffer('');
+            // Don't clear fullTranscript - we want cumulative context
 
         } catch (e) {
             console.error("Summary Error", e);
