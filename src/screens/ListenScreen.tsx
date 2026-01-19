@@ -10,7 +10,7 @@ import { transcribeAudio, translateText, summarizeText, generateTTS } from '../s
 
 // Config
 const CHUNK_DURATION_MS = 10000; // 10 seconds
-const SUMMARY_INTERVAL_MS = 60000; // 1 minute
+const SUMMARY_INTERVAL_MS = 30000; // 30 seconds
 
 type TranscriptSegment = {
     id: string;
