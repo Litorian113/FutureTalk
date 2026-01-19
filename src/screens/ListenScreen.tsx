@@ -2,15 +2,15 @@ import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView, ActivityIndicator } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { useAudioPlayer, setAudioModeAsync } from 'expo-audio';
 
 import { THEME } from '../constants';
 import { useRecorder } from '../hooks/useAudio';
-import { transcribeAudio, translateText, summarizeText, generateTTS } from '../services/openai';
+import { summarizeText } from '../services/openai';
+import ListenModeProcessor from '../services/ListenModeProcessor';
 
 // Config
 const CHUNK_DURATION_MS = 15000; // 15 seconds (longer chunks = less interruptions, better context)
-const SUMMARY_INTERVAL_MS = 30000; // 30 seconds
+const SUMMARY_INTERVAL_MS = 45000; // 45 seconds
 
 type TranscriptSegment = {
     id: string;
@@ -39,90 +39,42 @@ export default function ListenScreen() {
     const loopTimeoutRef = useRef<NodeJS.Timeout | null>(null);
     const summaryIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
-    // Audio Player for TTS
-    const player = useAudioPlayer(null);
-    const [ttsQueue, setTtsQueue] = useState<string[]>([]); // Queue of file URIs
-    const isPlayingRef = useRef(false);
+    // Processor (No TTS in Listen Mode - just text!)
+    const processorRef = useRef<ListenModeProcessor | null>(null);
 
-    // --- TTS Queue Management ---
+    // Initialize Processor
     useEffect(() => {
-        const processQueue = async () => {
-            if (ttsQueue.length === 0 || isPlayingRef.current) return;
+        processorRef.current = new ListenModeProcessor(
+            // onResult callback
+            (result) => {
+                console.log(`[ListenMode] Received result ${result.id}`);
 
-            isPlayingRef.current = true;
-            const nextUri = ttsQueue[0];
+                // Add to UI
+                const newSegment: TranscriptSegment = {
+                    id: result.id.toString(),
+                    original: result.original,
+                    german: result.german,
+                    timestamp: result.timestamp,
+                };
 
-            try {
-                console.log('[ListenMode] Playing TTS:', nextUri.substring(nextUri.length - 30));
-
-                // Force playback mode (might interrupt recording on iOS, but needed for speaker output)
-                await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
-
-                player.replace({ uri: nextUri });
-                player.play();
-
-                // Safety timeout: If track doesn't finish in 30s, force-finish it
-                setTimeout(() => {
-                    if (isPlayingRef.current) {
-                        console.warn('[ListenMode] TTS timeout - forcing finish');
-                        finishTrack();
-                    }
-                }, 30000);
-
-                // Wait for finish (approximate or use event listener if available in future)
-                // Since we don't have an "onFinish" event easily in this hook setup without refactoring,
-                // we rely on the duration or simply polling.
-                // Actually, let's just wait for duration * 1000.
-                // But player doesn't give duration immediately potentially.
-                // Workaround: We remove from queue when player status changes to idle?
-                // For stability in this V1, let's assume average reading speed or check status loop.
-            } catch (e) {
-                console.error('TTS Play error', e);
-                finishTrack();
+                setSegments(prev => [newSegment, ...prev]);
+                setFullTranscript(prev => {
+                    const updated = prev + " " + result.german;
+                    console.log(`[ListenMode] fullTranscript updated. Length: ${updated.length}`);
+                    return updated;
+                });
+                setStatus('Listening...');
+            },
+            // onContextUpdate callback
+            (newContext) => {
+                setLastTranscriptContext(newContext);
             }
+        );
+
+        return () => {
+            processorRef.current?.clear();
         };
-
-        processQueue();
-    }, [ttsQueue]);
-
-    // Monitor player status to advance queue
-    useEffect(() => {
-        if (isPlayingRef.current && !player.playing) {
-            // It stopped? Or just paused? Assuming stopped means finished for now if enough time passed
-            // This is tricky with simple hooks. 
-            // Let's use a dirty hack: If it WAS playing and now isn't, we are done.
-            // But initial state is not playing.
-            // We'll handle "finishTrack" call inside the Render loop if we see it stopped?
-            // Better: polling check.
-        }
-    }, [player.playing]);
-
-    // Simple poller for playback finish
-    useEffect(() => {
-        const interval = setInterval(() => {
-            if (isPlayingRef.current && !player.playing && player.currentTime > 0) {
-                // It seems it finished
-                finishTrack();
-            }
-        }, 500);
-        return () => clearInterval(interval);
     }, []);
-
-    const finishTrack = () => {
-        // Remove first item
-        setTtsQueue(prev => prev.slice(1));
-        isPlayingRef.current = false;
-        // Switch back to record mode if listening (Wait, we can't do this easily if we overlap)
-        // Actually, we don't need to switch back to record mode explicitly if 'allowsRecording' 
-        // was only set to false. BUT recording stops if we set allowsRecording false?
-        // CRITICAL: On iOS, setting allowsRecording=false STOPS recording.
-        // So we CANNOT use the speaker-forcing hack while recording in background!
-        // We must accept earpiece output (or Bluetooth) for simultaneous record/play on iOS.
-        // OR we use "PlayAndRecord" with "DefaultToSpeaker". 
-        // Since we can't easily set DefaultToSpeaker in expo-audio yet, we might have to live with Receiver output
-        // OR pauses in recording.
-        // For "Listen Mode", continuous recording is priority. We skip the "force speaker" hack here.
-    };
 
 
     // --- Recording Loop ---
@@ -138,6 +90,11 @@ export default function ListenScreen() {
             if (summaryIntervalRef.current) clearInterval(summaryIntervalRef.current);
 
             await stopRecording();
+
+            // Generate final summary when stopping
+            console.log('[ListenMode] Stopped. Generating final summary...');
+            performSummary();
+
             setStatus('Stopped');
         } else {
             // START
@@ -145,15 +102,12 @@ export default function ListenScreen() {
             isListeningRef.current = true;
             setStatus('Listening...');
 
-            // Ensure Audio Mode allows recording (and mixing if we want background music?)
-            await setAudioModeAsync({
-                allowsRecording: true,
-                playsInSilentMode: true,
-                shouldPlayInBackground: true, // Keep alive
-            });
-
             // Start summary timer
-            summaryIntervalRef.current = setInterval(performSummary, SUMMARY_INTERVAL_MS);
+            console.log('[ListenMode] Starting summary interval (every 30s)');
+            summaryIntervalRef.current = setInterval(() => {
+                console.log('[ListenMode] Summary interval fired!');
+                performSummary();
+            }, SUMMARY_INTERVAL_MS);
 
             // Start Rec Loop
             runRecordLoop();
@@ -189,9 +143,11 @@ export default function ListenScreen() {
             // Recurse immediately to keep gap minimal
             runRecordLoop();
 
-            // 5. Process the captured URI in background
+            // 5. Process the captured URI in background (via processor)
             if (uri) {
-                processChunk(uri);
+                console.log('[ListenMode] Adding chunk to processor');
+                processorRef.current?.addChunk(uri, lastTranscriptContext);
+                setStatus('Processing...');
             }
 
         } catch (e) {
@@ -200,86 +156,37 @@ export default function ListenScreen() {
         }
     };
 
-    const processChunk = async (uri: string) => {
-        try {
-            setStatus('Transcribing...');
-
-            // A. Transcribe + Detect Lang (with context prompt for continuity)
-            const { text, language } = await transcribeAudio(uri, lastTranscriptContext);
-
-            console.log('[ListenMode] Transcribed:', text.substring(0, 50) + '...', 'Lang:', language);
-
-            if (!text || text.trim().length < 2) {
-                console.log('[ListenMode] Ignoring silence/empty chunk');
-                return; // Ignore silence
-            }
-
-            // B. Translate to German (if not already)
-            let germanText = text;
-            if (!language.startsWith('de')) {
-                setStatus('Translating...');
-                germanText = await translateText(text, language || "Auto", "German");
-                console.log('[ListenMode] Translated:', germanText.substring(0, 50) + '...');
-            } else {
-                console.log('[ListenMode] Already German, skipping translation');
-            }
-
-            // C. Update context for next chunk (cumulative, max 200 chars)
-            // Build context from last few chunks, not just current one
-            const newContext = (lastTranscriptContext + " " + text).slice(-200).trim();
-            setLastTranscriptContext(newContext);
-            console.log('[ListenMode] Context updated:', newContext.substring(0, 50) + '...');
-
-            // D. Update UI
-            const newSegment: TranscriptSegment = {
-                id: Date.now().toString(),
-                original: text,
-                german: germanText,
-                timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            };
-
-            setSegments(prev => [newSegment, ...prev]);
-            setFullTranscript(prev => prev + " " + germanText); // Accumulate for summary
-            setStatus('Listening...');
-
-            // E. Generate TTS & Queue
-            setStatus('Generating audio...');
-            const ttsUri = await generateTTS(germanText, 'alloy');
-            if (ttsUri) {
-                console.log('[ListenMode] TTS generated, adding to queue. Queue length:', ttsQueue.length + 1);
-                setTtsQueue(prev => [...prev, ttsUri]);
-            } else {
-                console.warn('[ListenMode] TTS generation failed');
-            }
-
-        } catch (e) {
-            console.error("[ListenMode] Processing Error", e);
-        }
-    };
-
     const performSummary = async () => {
         console.log('[ListenMode] performSummary called. Transcript length:', fullTranscript.length);
+        console.log('[ListenMode] Transcript preview:', fullTranscript.substring(0, 100));
 
-        if (!fullTranscript || fullTranscript.length < 50) {
-            console.log('[ListenMode] Not enough content for summary yet');
+        if (!fullTranscript || fullTranscript.trim().length < 20) {
+            console.log('[ListenMode] Not enough content for summary yet (need at least 20 chars)');
             return;
         }
 
         try {
             setStatus('Summarizing...');
-            console.log('[ListenMode] Generating summary...');
+            console.log('[ListenMode] Generating summary from', fullTranscript.length, 'characters...');
 
             // Use the FULL transcript for cumulative summary
             const newSummary = await summarizeText(fullTranscript);
+
+            if (!newSummary || newSummary.trim().length === 0) {
+                console.warn('[ListenMode] Summary returned empty!');
+                setStatus('Listening...');
+                return;
+            }
+
             setSummary(newSummary); // REPLACE instead of append
 
-            console.log('[ListenMode] Summary updated:', newSummary.substring(0, 100) + '...');
+            console.log('[ListenMode] Summary updated successfully:', newSummary.substring(0, 100) + '...');
             setStatus('Listening...');
 
             // Don't clear fullTranscript - we want cumulative context
 
         } catch (e) {
-            console.error("[ListenMode] Summary Error", e);
+            console.error("[ListenMode] Summary Error:", e);
             setStatus('Listening...');
         }
     };
@@ -287,22 +194,46 @@ export default function ListenScreen() {
 
     // --- Render ---
 
+    const handleClear = () => {
+        if (activeTab === 'live') {
+            setSegments([]);
+            setFullTranscript('');
+            setLastTranscriptContext('');
+            console.log('[ListenMode] Live chat cleared');
+        } else {
+            setSummary('');
+            console.log('[ListenMode] Summary cleared');
+            // Test: Set a dummy summary to verify state works
+            setTimeout(() => {
+                setSummary('TEST: If you see this, the summary state is working! 🎉');
+                console.log('[ListenMode] Test summary set');
+            }, 1000);
+        }
+    };
+
     return (
         <View style={[styles.container, { paddingTop: insets.top }]}>
 
             {/* Header Tabs */}
             <View style={styles.tabHeader}>
-                <TouchableOpacity
-                    style={[styles.tabBtn, activeTab === 'live' && styles.tabBtnActive]}
-                    onPress={() => setActiveTab('live')}
-                >
-                    <Text style={[styles.tabText, activeTab === 'live' && styles.tabTextActive]}>Live Chat</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                    style={[styles.tabBtn, activeTab === 'summary' && styles.tabBtnActive]}
-                    onPress={() => setActiveTab('summary')}
-                >
-                    <Text style={[styles.tabText, activeTab === 'summary' && styles.tabTextActive]}>Summary</Text>
+                <View style={styles.tabRow}>
+                    <TouchableOpacity
+                        style={[styles.tabBtn, activeTab === 'live' && styles.tabBtnActive]}
+                        onPress={() => setActiveTab('live')}
+                    >
+                        <Text style={[styles.tabText, activeTab === 'live' && styles.tabTextActive]}>Live Chat</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                        style={[styles.tabBtn, activeTab === 'summary' && styles.tabBtnActive]}
+                        onPress={() => setActiveTab('summary')}
+                    >
+                        <Text style={[styles.tabText, activeTab === 'summary' && styles.tabTextActive]}>Summary</Text>
+                    </TouchableOpacity>
+                </View>
+
+                {/* Clear Button */}
+                <TouchableOpacity onPress={handleClear} style={styles.clearBtn}>
+                    <Ionicons name="trash-outline" size={20} color={THEME.textSecondary} />
                 </TouchableOpacity>
             </View>
 
@@ -357,10 +288,15 @@ const styles = StyleSheet.create({
     },
     tabHeader: {
         flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
         paddingHorizontal: 20,
         borderBottomWidth: 1,
         borderBottomColor: '#F2F2F7',
         marginBottom: 10,
+    },
+    tabRow: {
+        flexDirection: 'row',
     },
     tabBtn: {
         paddingVertical: 15,
@@ -378,6 +314,9 @@ const styles = StyleSheet.create({
     },
     tabTextActive: {
         color: THEME.text,
+    },
+    clearBtn: {
+        padding: 8,
     },
     contentArea: {
         flex: 1,
