@@ -53,18 +53,28 @@ export default function ListenScreen() {
             const nextUri = ttsQueue[0];
 
             try {
-                // Force header output
+                console.log('[ListenMode] Playing TTS:', nextUri.substring(nextUri.length - 30));
+
+                // Force playback mode (might interrupt recording on iOS, but needed for speaker output)
                 await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
 
                 player.replace({ uri: nextUri });
                 player.play();
 
+                // Safety timeout: If track doesn't finish in 30s, force-finish it
+                setTimeout(() => {
+                    if (isPlayingRef.current) {
+                        console.warn('[ListenMode] TTS timeout - forcing finish');
+                        finishTrack();
+                    }
+                }, 30000);
+
                 // Wait for finish (approximate or use event listener if available in future)
                 // Since we don't have an "onFinish" event easily in this hook setup without refactoring,
                 // we rely on the duration or simply polling.
-                // Actually, let's just wait for duration * 1000. 
-                // But player doesn't give duration immediately potentially. 
-                // Workaround: We remove from queue when player status changes to idle? 
+                // Actually, let's just wait for duration * 1000.
+                // But player doesn't give duration immediately potentially.
+                // Workaround: We remove from queue when player status changes to idle?
                 // For stability in this V1, let's assume average reading speed or check status loop.
             } catch (e) {
                 console.error('TTS Play error', e);
@@ -197,17 +207,28 @@ export default function ListenScreen() {
             // A. Transcribe + Detect Lang (with context prompt for continuity)
             const { text, language } = await transcribeAudio(uri, lastTranscriptContext);
 
-            if (!text || text.trim().length < 2) return; // Ignore silence
+            console.log('[ListenMode] Transcribed:', text.substring(0, 50) + '...', 'Lang:', language);
+
+            if (!text || text.trim().length < 2) {
+                console.log('[ListenMode] Ignoring silence/empty chunk');
+                return; // Ignore silence
+            }
 
             // B. Translate to German (if not already)
             let germanText = text;
             if (!language.startsWith('de')) {
+                setStatus('Translating...');
                 germanText = await translateText(text, language || "Auto", "German");
+                console.log('[ListenMode] Translated:', germanText.substring(0, 50) + '...');
+            } else {
+                console.log('[ListenMode] Already German, skipping translation');
             }
 
-            // C. Update context for next chunk (keep last ~100 chars for prompt)
-            const contextSnippet = text.slice(-100); // Last 100 chars
-            setLastTranscriptContext(contextSnippet);
+            // C. Update context for next chunk (cumulative, max 200 chars)
+            // Build context from last few chunks, not just current one
+            const newContext = (lastTranscriptContext + " " + text).slice(-200).trim();
+            setLastTranscriptContext(newContext);
+            console.log('[ListenMode] Context updated:', newContext.substring(0, 50) + '...');
 
             // D. Update UI
             const newSegment: TranscriptSegment = {
@@ -222,28 +243,44 @@ export default function ListenScreen() {
             setStatus('Listening...');
 
             // E. Generate TTS & Queue
-            const ttsUri = await generateTTS(germanText, 'alloy'); // Alloy is good for general
+            setStatus('Generating audio...');
+            const ttsUri = await generateTTS(germanText, 'alloy');
             if (ttsUri) {
+                console.log('[ListenMode] TTS generated, adding to queue. Queue length:', ttsQueue.length + 1);
                 setTtsQueue(prev => [...prev, ttsUri]);
+            } else {
+                console.warn('[ListenMode] TTS generation failed');
             }
 
         } catch (e) {
-            console.error("Processing Error", e);
+            console.error("[ListenMode] Processing Error", e);
         }
     };
 
     const performSummary = async () => {
-        if (!fullTranscript || fullTranscript.length < 50) return;
+        console.log('[ListenMode] performSummary called. Transcript length:', fullTranscript.length);
+
+        if (!fullTranscript || fullTranscript.length < 50) {
+            console.log('[ListenMode] Not enough content for summary yet');
+            return;
+        }
 
         try {
+            setStatus('Summarizing...');
+            console.log('[ListenMode] Generating summary...');
+
             // Use the FULL transcript for cumulative summary
             const newSummary = await summarizeText(fullTranscript);
             setSummary(newSummary); // REPLACE instead of append
 
+            console.log('[ListenMode] Summary updated:', newSummary.substring(0, 100) + '...');
+            setStatus('Listening...');
+
             // Don't clear fullTranscript - we want cumulative context
 
         } catch (e) {
-            console.error("Summary Error", e);
+            console.error("[ListenMode] Summary Error", e);
+            setStatus('Listening...');
         }
     };
 
