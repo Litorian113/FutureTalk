@@ -160,8 +160,9 @@ export default function ListenScreen() {
         console.log('[ListenMode] performSummary called. Transcript length:', fullTranscript.length);
         console.log('[ListenMode] Transcript preview:', fullTranscript.substring(0, 100));
 
-        if (!fullTranscript || fullTranscript.trim().length < 20) {
-            console.log('[ListenMode] Not enough content for summary yet (need at least 20 chars)');
+        if (!fullTranscript || fullTranscript.trim().length === 0) {
+            console.log('[ListenMode] No content to summarize');
+            setSummary('Noch kein Inhalt zum Zusammenfassen. Starte die Aufnahme und sprich etwas.');
             return;
         }
 
