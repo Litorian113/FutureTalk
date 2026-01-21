@@ -83,5 +83,11 @@ Need to follow a long lecture or an English video? Listen Mode is built for cont
 
 ---
 
+By Franz Anhäupl
+
+## 🤝 Contributing
+
+Contributions are welcome! Feel free to open issues or submit pull requests to help us make communication universal.
+
 ## 🛡️ License
 Licensed under the MIT License. Built with ❤️ for universal communication.
