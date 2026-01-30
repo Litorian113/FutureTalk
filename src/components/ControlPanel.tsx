@@ -15,6 +15,7 @@ interface Props {
     className?: object;
 }
 
+
 const LangPicker = ({ current, onChange }: { current: Language, onChange: (l: Language) => void }) => (
     <TouchableOpacity
         style={styles.langButton}
