@@ -3,12 +3,14 @@ import { StyleSheet } from 'react-native';
 import HomeScreen from '../screens/HomeScreen';
 import TranslateScreen from '../screens/TranslateScreen';
 import ListenScreen from '../screens/ListenScreen';
+import RealtimeWebScreen from '../screens/RealtimeWebScreen';
 import { THEME } from '../constants';
 
 // Import our custom icon components
 import { HomeIcon } from '../components/icons/HomeIcon';
 import { TranslateIcon } from '../components/icons/TranslateIcon';
 import { ListenIcon } from '../components/icons/ListenIcon';
+import { RealtimeIcon } from '../components/icons/RealtimeIcon';
 
 const Tab = createBottomTabNavigator();
 
@@ -31,13 +33,17 @@ export default function BottomTabNavigator() {
                     } else if (route.name === 'Translate') {
                         return <TranslateIcon size={size} color={color} />;
                     } else if (route.name === 'Listen') {
+                    } else if (route.name === 'Listen') {
                         return <ListenIcon size={size} color={color} />;
+                    } else if (route.name === 'Realtime') {
+                        return <RealtimeIcon size={size} color={color} />;
                     }
                     return null;
                 },
             })}
         >
             <Tab.Screen name="Home" component={HomeScreen} />
+            <Tab.Screen name="Realtime" component={RealtimeWebScreen} options={{ tabBarLabel: 'Realtime' }} />
             <Tab.Screen name="Translate" component={TranslateScreen} />
             <Tab.Screen name="Listen" component={ListenScreen} />
         </Tab.Navigator>
